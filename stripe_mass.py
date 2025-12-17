@@ -131,7 +131,7 @@ async def ppc(card_data, card_num, total_cards, user_id=None, username=None):
         if setup_intent_nonce == "None":
             return f"❌ [{card_num}/{total_cards}] No setup intent nonce found"
 
-        await asyncio.sleep(random.uniform(2, 4))
+        await asyncio.sleep(0.1)
 
         # Step 2: Create payment method with Stripe
         headers2 = {
@@ -180,7 +180,7 @@ async def ppc(card_data, card_num, total_cards, user_id=None, username=None):
         except json.JSONDecodeError:
             return f"❌ [{card_num}/{total_cards}] Invalid JSON response from Stripe"
 
-        await asyncio.sleep(random.uniform(1, 2))
+        await asyncio.sleep(0.1)
 
         # Step 3: Send to WooCommerce admin-ajax.php
         headers3 = {
@@ -319,7 +319,7 @@ async def check_and_post_approved_cards(bot: Bot):
             if await post_to_channel(bot, card_info):
                 posted_count += 1
                 approved_cards_list.remove(card_info)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.1)
         except Exception as e:
             print(f"Error posting card: {e}")
     
@@ -406,7 +406,7 @@ async def postnow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         batch = approved_cards_list[i:i+5]
         if await post_batch_to_channel(bot, batch, i//5 + 1):
             posted_count += len(batch)
-        await asyncio.sleep(2)
+        await asyncio.sleep(0.1)
     
     # Clear list
     approved_cards_list = []
@@ -516,7 +516,7 @@ async def handle_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for _ in range(int(delay)):
                     if not bot_running:
                         break
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.1)
         
         # Final summary if not stopped
         if bot_running:
