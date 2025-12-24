@@ -64,6 +64,9 @@ async def make_request(
 
 async def ppc(card_data, card_num, total_cards, user_id=None, username=None):
     """မူရင်း card checking function"""
+    # Declare global variable at the beginning of function
+    global approved_cards_list
+    
     try:
         cc, mon, year, cvv = card_data.split("|")
     except ValueError:
@@ -247,8 +250,7 @@ async def ppc(card_data, card_num, total_cards, user_id=None, username=None):
                             "total_cards": total_cards
                         }
                         
-                        # Add to approved cards list
-                        global approved_cards_list
+                        # Add to approved cards list - already declared global
                         approved_cards_list.append(card_info)
                         
                         return result_message
@@ -284,7 +286,7 @@ async def ppc(card_data, card_num, total_cards, user_id=None, username=None):
                             "total_cards": total_cards
                         }
                         
-                        global approved_cards_list
+                        # Add to approved cards list - already declared global
                         approved_cards_list.append(card_info)
                         
                         return result_message
