@@ -23,7 +23,7 @@ load_dotenv()
 DOMAIN = os.getenv("DOMAIN", "https://dainte.com")
 PK = os.getenv("STRIPE_PK", "pk_live_51F0CDkINGBagf8ROVbhXA43bHPn9cGEHEO55TN2mfNGYsbv2DAPuv6K0LoVywNJKNuzFZ4xGw94nVElyYg1Aniaf00QDrdzPhf")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003673366048")
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Changed from hardcoded
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8569583023:AAFNKM3mkumVNrpj9uOZ-32fV3sP3nZ0TSo")  # Changed from hardcoded
 ADMIN_IDS = [admin_id.strip() for admin_id in os.getenv("ADMIN_IDS", "1318826936").split(",") if admin_id.strip()]
 
 # Global variables
