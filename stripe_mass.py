@@ -22,7 +22,13 @@ bot_running = True
 current_task = None
 approved_cards_list = []
 
-# ===================== ORIGINAL CARD CHECKING FUNCTIONS =====================
+# ===================== HELPER FUNCTIONS =====================
+
+def safe_get(obj, key, default=None):
+    """Safely get value from object, handles non-dict objects"""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return default
 
 def parseX(data, start, end):
     try:
@@ -53,6 +59,8 @@ async def make_request(
             return await response.text(), response.status
     except Exception as e:
         return None, 0
+
+# ===================== ORIGINAL CARD CHECKING FUNCTIONS =====================
 
 async def ppc(card_data, card_num, total_cards, user_id=None, username=None):
     """မူရင်း card checking function"""
@@ -172,13 +180,18 @@ async def ppc(card_data, card_num, total_cards, user_id=None, username=None):
             
         try:
             pm_data = json.loads(req2)
-            if 'error' in pm_data:
-                return f"❌ [{card_num}/{total_cards}] Stripe error: {pm_data['error']['message']}"
-            pmid = pm_data.get('id')
+            # Use safe_get to handle possible non-dict responses
+            error_info = safe_get(pm_data, 'error')
+            if error_info:
+                error_message = safe_get(error_info, 'message', 'Unknown Stripe error')
+                return f"❌ [{card_num}/{total_cards}] Stripe error: {error_message}"
+            pmid = safe_get(pm_data, 'id')
             if not pmid:
                 return f"❌ [{card_num}/{total_cards}] No payment method ID"
         except json.JSONDecodeError:
             return f"❌ [{card_num}/{total_cards}] Invalid JSON response from Stripe"
+        except Exception as e:
+            return f"❌ [{card_num}/{total_cards}] Error parsing Stripe response: {str(e)}"
 
         await asyncio.sleep(random.uniform(1, 2))
 
@@ -216,37 +229,78 @@ async def ppc(card_data, card_num, total_cards, user_id=None, username=None):
         if req3:
             try:
                 result_data = json.loads(req3)
-                if result_data.get('success'):
-                    result_message = f"✅ ᴀᴘᴘʀᴏᴠᴇᴅ 🔥 [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}"
+                
+                # 🔴 FIXED: Check if result_data is a dictionary before using .get()
+                if isinstance(result_data, dict):
+                    success = safe_get(result_data, 'success', False)
                     
-                    # ✅ Store approved card for channel posting
-                    card_info = {
-                        "card": original_card,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "user_id": user_id,
-                        "username": username,
-                        "card_num": card_num,
-                        "total_cards": total_cards
-                    }
-                    
-                    # Add to approved cards list
-                    global approved_cards_list
-                    approved_cards_list.append(card_info)
-                    
-                    return result_message
+                    if success:
+                        result_message = f"✅ ᴀᴘᴘʀᴏᴠᴇᴅ 🔥 [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}"
+                        
+                        # ✅ Store approved card for channel posting
+                        card_info = {
+                            "card": original_card,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "user_id": user_id,
+                            "username": username,
+                            "card_num": card_num,
+                            "total_cards": total_cards
+                        }
+                        
+                        # Add to approved cards list
+                        global approved_cards_list
+                        approved_cards_list.append(card_info)
+                        
+                        return result_message
+                    else:
+                        error_msg = "Unknown error"
+                        try:
+                            # Use safe_get to safely access nested data
+                            data_part = safe_get(result_data, 'data')
+                            if isinstance(data_part, dict):
+                                error_info = safe_get(data_part, 'error')
+                                if isinstance(error_info, dict):
+                                    error_msg = safe_get(error_info, 'message', 'No error message')
+                            
+                            if error_msg == "Unknown error":
+                                error_msg = safe_get(result_data, 'message', 'No message')
+                        except Exception as e:
+                            error_msg = f"Error parsing error message: {str(e)}"
+                        
+                        return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗘𝗿𝗿𝗼𝗿: {error_msg}"
+                
+                elif isinstance(result_data, (int, float, str, bool)):
+                    # Handle cases where result_data is a simple value (e.g., 0, 1, true, false)
+                    result_str = str(result_data).lower()
+                    if result_str in ['1', 'true', 'success']:
+                        result_message = f"✅ ᴀᴘᴘʀᴏᴠᴇᴅ 🔥 [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}"
+                        
+                        card_info = {
+                            "card": original_card,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "user_id": user_id,
+                            "username": username,
+                            "card_num": card_num,
+                            "total_cards": total_cards
+                        }
+                        
+                        global approved_cards_list
+                        approved_cards_list.append(card_info)
+                        
+                        return result_message
+                    else:
+                        return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲: {result_data}"
+                
                 else:
-                    error_msg = "Unknown error"
-                    try:
-                        if 'data' in result_data and 'error' in result_data['data']:
-                            error_msg = result_data['data']['error']['message']
-                        elif 'message' in result_data:
-                            error_msg = result_data['message']
-                    except:
-                        error_msg = str(result_data)
-                    
-                    return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗘𝗿𝗿𝗼𝗿: {error_msg}"
+                    # result_data is neither dict nor simple type
+                    return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗨𝗻𝗲𝘅𝗽𝗲𝗰𝘁𝗲𝗱 𝗿𝗲𝘀𝗽𝗼𝗻𝘀𝗲 𝘁𝘆𝗽𝗲: {type(result_data).__name__}"
+            
             except json.JSONDecodeError:
-                return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲: {req3}"
+                # Response is not valid JSON
+                return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 (non-JSON): {req3[:100]}..."
+            
+            except Exception as e:
+                return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗣𝗿𝗼𝗰𝗲𝘀𝘀𝗶𝗻𝗴 𝗲𝗿𝗿𝗼𝗿: {str(e)}"
         
         return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗡𝗼 𝗿𝗲𝘀𝗽𝗼𝗻𝘀𝗲 𝗳𝗿𝗼𝗺 𝘀𝗲𝗿𝘃𝗲𝗿"
 
@@ -395,7 +449,7 @@ async def postnow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /postnow command"""
     user_id = str(update.effective_user.id)
     
-    # Check admin access
+    # Check admin access - use safe_get approach for context.bot_data if needed
     if ADMIN_IDS and user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ Admin only command.")
         return
@@ -530,12 +584,16 @@ async def handle_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Final summary if not stopped
         if bot_running:
+            success_rate = 0
+            if total_cards > 0:
+                success_rate = (approved / total_cards) * 100
+            
             summary = [
                 "🎯 **Check Completed**",
                 f"📊 Total: {total_cards}",
                 f"✅ Approved: {approved}",
                 f"❌ Declined: {declined}",
-                f"📈 Success rate: {(approved/total_cards)*100:.1f}%" if total_cards > 0 else "📈 Success rate: 0%",
+                f"📈 Success rate: {success_rate:.1f}%",
                 "",
                 f"✅ Approved cards posted to channel."
             ]
@@ -555,10 +613,14 @@ async def handle_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
+        print(f"Error in handle_text_file: {e}")
     finally:
         # Cleanup
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception as e:
+            print(f"Error removing temp file: {e}")
         
         current_task = None
 
