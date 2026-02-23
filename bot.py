@@ -1,14 +1,30 @@
+import sys
 import aiohttp
 import asyncio
 import json
 import random
 import os
-import sys
 from datetime import datetime
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
+# ===================== PYTHON VERSION CHECK =====================
+print(f"🐍 Python version: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+
+if sys.version_info >= (3, 13):
+    print("⚠️ Warning: Using Python 3.13+. This may cause compatibility issues.")
+    print("✅ Recommended to use Python 3.11 for best compatibility.")
+    
+# Try to apply nest_asyncio (for event loop issues)
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+    print("✅ nest_asyncio applied successfully")
+except ImportError:
+    print("⚠️ nest_asyncio not installed, continuing without it")
+
+# ... ကျန်တဲ့ code တွေဆက်ရေးပါ ...
 # ===================== FIX FOR EVENT LOOP ERROR =====================
 # Install nest_asyncio for Render environment
 try:
