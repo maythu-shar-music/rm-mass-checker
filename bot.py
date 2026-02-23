@@ -9,12 +9,23 @@ from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
+# ===================== FIX FOR EVENT LOOP ERROR =====================
+# Install nest_asyncio for Render environment
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+    print("✅ nest_asyncio applied successfully")
+except ImportError:
+    print("⚠️ nest_asyncio not installed, continuing without it")
+    # If nest_asyncio is not available, we'll handle it differently
+
 # ===================== CONFIGURATION =====================
 load_dotenv()
 
 DOMAIN = os.getenv("DOMAIN", "https://remember.org.au")
 PK = os.getenv("STRIPE_PK", "pk_live_51P0v83B09gpyA2Juu5SSq35nUSMyDWVutWv5RAWYv2XeUviqlqhfV5JlBgK64uhOVb0LWcthjR2aJwo5NkNfimZr00g4SiBFrz")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003544706846")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8785767340:AAGAnLPeIq-Eb9bb32At0E4d4sAIyiqQXjg")
 ADMIN_IDS = os.getenv("ADMIN_IDS", "1318826936").split(",") if os.getenv("ADMIN_IDS") else []
 
 # Global variables
@@ -614,8 +625,10 @@ async def handle_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Main function for Render hosting"""
+    global bot_running
+    
     # Get configuration
-    BOT_TOKEN = "8785767340:AAGAnLPeIq-Eb9bb32At0E4d4sAIyiqQXjg"
+    BOT_TOKEN = os.getenv("BOT_TOKEN", "8785767340:AAGAnLPeIq-Eb9bb32At0E4d4sAIyiqQXjg")
     
     if not BOT_TOKEN:
         print("❌ Error: BOT_TOKEN not set in environment!")
@@ -630,6 +643,9 @@ def main():
     print(f"📢 Channel: {CHANNEL_ID}")
     print(f"👑 Admin IDs: {ADMIN_IDS}")
     print("=" * 40)
+    
+    # Initialize bot_running
+    bot_running = True
     
     try:
         # Create application
@@ -651,11 +667,29 @@ def main():
         print("  /postnow  - Post approved cards to channel")
         print("=" * 40)
         
-        app.run_polling()
+        # Run the bot with proper error handling
+        try:
+            app.run_polling()
+        except RuntimeError as e:
+            if "There is no current event loop in thread" in str(e):
+                print("⚠️ Event loop error detected, using alternative method...")
+                # Alternative method if run_polling fails
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(app.run_polling())
+            else:
+                raise e
         
+    except KeyboardInterrupt:
+        print("\n🛑 Bot stopped by user")
+        bot_running = False
     except Exception as e:
         print(f"❌ Bot error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
+
+# ===================== ENTRY POINT =====================
 
 if __name__ == "__main__":
     main()
